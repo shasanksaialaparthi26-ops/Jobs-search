@@ -1,0 +1,29 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: user-service
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8180/realms/jobs-search}
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 11MB
+
+keycloak:
+  url: ${KEYCLOAK_URL:http://localhost:8180}
+  realm: ${KEYCLOAK_REALM:jobs-search}
+  client-id: ${KEYCLOAK_CLIENT_ID:user-service}
+  client-secret: ${KEYCLOAK_CLIENT_SECRET:}
+
+storage:
+  s3:
+    endpoint: ${S3_ENDPOINT:http://localhost:9000}
+    region: ${S3_REGION:us-east-1}
+    bucket: ${S3_BUCKET:resumes}
+    access-key: ${S3_ACCESS_KEY_ID:local-minio}
+    secret-key: ${S3_SECRET_ACCESS_KEY:local-minio-secret}
