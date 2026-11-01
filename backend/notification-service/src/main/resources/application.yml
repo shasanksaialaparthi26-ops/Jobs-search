@@ -1,0 +1,18 @@
+server:
+  port: 8084
+
+spring:
+  application:
+    name: notification-service
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8180/realms/jobs-search}
+          jwk-set-uri: ${KEYCLOAK_JWK_SET_URI:}
+
+mailgun:
+  base-url: ${MAILGUN_BASE_URL:https://api.mailgun.net}
+  domain: ${MAILGUN_DOMAIN:}
+  api-key: ${MAILGUN_API_KEY:}
+  from-address: ${MAILGUN_FROM_ADDRESS:}

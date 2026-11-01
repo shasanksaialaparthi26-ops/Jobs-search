@@ -7,13 +7,62 @@ const keycloak = new Keycloak({
   clientId: import.meta.env.VITE_KEYCLOAK_CLIENT_ID ?? "jobs-web",
 });
 
-type Screen = "signin" | "signup" | "welcome" | "resume" | "chat";
+type Screen = "signin" | "signup" | "welcome" | "resume" | "applications" | "chat";
 type Registration = {
   firstName: string;
   lastName: string;
   email: string;
   password: string;
 };
+
+type ResumeAnalysis = {
+  summary: string;
+  matchScore: number;
+  matchedSkills: string[];
+  skillGaps: { skill: string; importance: string }[];
+  recommendations: string[];
+};
+
+type ResumeDraft = {
+  resumeText: string;
+  changeSummary: string;
+  addedSkills: string[];
+};
+
+type ApplicationStatus = "SAVED" | "READY_TO_APPLY" | "APPLIED" | "INTERVIEW" | "OFFER" | "REJECTED" | "WITHDRAWN";
+type JobApplication = {
+  id: string;
+  company: string;
+  jobTitle: string;
+  jobUrl: string | null;
+  status: ApplicationStatus;
+  appliedDate: string | null;
+  notes: string | null;
+  jobDescription: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+type ApplicationForm = {
+  company: string;
+  jobTitle: string;
+  jobUrl: string;
+  status: ApplicationStatus;
+  appliedDate: string;
+  notes: string;
+  jobDescription: string;
+};
+const APPLICATION_STATUSES: { value: ApplicationStatus; label: string }[] = [
+  { value: "SAVED", label: "Saved" },
+  { value: "READY_TO_APPLY", label: "Resume ready" },
+  { value: "APPLIED", label: "Applied" },
+  { value: "INTERVIEW", label: "Interview" },
+  { value: "OFFER", label: "Offer" },
+  { value: "REJECTED", label: "Rejected" },
+  { value: "WITHDRAWN", label: "Withdrawn" },
+];
+const emptyApplicationForm = (): ApplicationForm => ({
+  company: "", jobTitle: "", jobUrl: "", status: "SAVED", appliedDate: "", notes: "", jobDescription: "",
+});
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8080";
 
@@ -22,6 +71,35 @@ function App() {
   const [ready, setReady] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [applications, setApplications] = useState<JobApplication[]>([]);
+  const [applicationError, setApplicationError] = useState("");
+
+  const listApplications = async () => {
+    const response = await authorizedFetch("/api/applications");
+    if (!response.ok) throw new Error("We couldn't load your job tracker.");
+    return response.json() as Promise<JobApplication[]>;
+  };
+
+  const saveApplication = async (application: ApplicationForm, id?: string) => {
+    const response = await authorizedFetch(id ? `/api/applications/${id}` : "/api/applications", {
+      method: id ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...application,
+        jobUrl: application.jobUrl || null,
+        appliedDate: application.appliedDate || null,
+        notes: application.notes || null,
+        jobDescription: application.jobDescription || null,
+      }),
+    });
+    if (!response.ok) throw new Error("We couldn't save this application. Check the details and retry.");
+    return response.json() as Promise<JobApplication>;
+  };
+
+  const removeApplication = async (id: string) => {
+    const response = await authorizedFetch(`/api/applications/${id}`, { method: "DELETE" });
+    if (!response.ok) throw new Error("We couldn't delete this application. Please try again.");
+  };
 
   useEffect(() => {
     keycloak
@@ -88,6 +166,62 @@ function App() {
     return response.json() as Promise<{ fileName: string; size: number }>;
   };
 
+  const authorizedFetch = async (path: string, init: RequestInit = {}) => {
+    await keycloak.updateToken(30);
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${keycloak.token ?? ""}`);
+    return fetch(`${API_URL}${path}`, { ...init, headers });
+  };
+
+  const loadLatestResume = async () => {
+    const response = await authorizedFetch("/api/resumes/latest");
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error("We couldn't check your saved resume. Please try again.");
+    return response.json() as Promise<{ fileName: string }>;
+  };
+
+  const analyzeResume = async (jobDescription: string) => {
+    const response = await authorizedFetch("/api/resumes/analyze", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobDescription }),
+    });
+    if (!response.ok) {
+      if (response.status === 404) throw new Error("Upload a resume before analyzing a job description.");
+      if (response.status === 400) throw new Error("Check the job description and make sure your resume has selectable text.");
+      if (response.status === 502) throw new Error("The AI service is unavailable. Check that Ollama is running with the configured model.");
+      throw new Error("We couldn't analyze this job description. Please try again.");
+    }
+    return response.json() as Promise<ResumeAnalysis>;
+  };
+
+  const tailorResume = async (jobDescription: string, confirmedSkills: string[]) => {
+    const response = await authorizedFetch("/api/resumes/tailor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jobDescription, confirmedSkills }),
+    });
+    if (!response.ok) {
+      if (response.status === 404) throw new Error("Upload a resume before creating a tailored draft.");
+      if (response.status === 502) throw new Error("The AI service is unavailable. Check that Ollama is running with the configured model.");
+      throw new Error("We couldn't create your tailored draft. Please try again.");
+    }
+    return response.json() as Promise<ResumeDraft>;
+  };
+
+  const exportResume = async (resumeText: string, format: "pdf" | "docx") => {
+    const response = await authorizedFetch(`/api/resumes/export?format=${format}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ resumeText }),
+    });
+    if (!response.ok) {
+      if (response.status === 400) throw new Error("The resume text could not be exported in that format.");
+      throw new Error("We couldn't download your resume. Please try again.");
+    }
+    return response.blob();
+  };
+
   if (!ready) {
     return <main className="loading-screen"><span className="loader" />Preparing your next move</main>;
   }
@@ -97,7 +231,7 @@ function App() {
       onNavigate={setScreen} />;
   }
 
-  if ((screen === "resume" || screen === "chat") && keycloak.authenticated) {
+  if ((screen === "resume" || screen === "applications" || screen === "chat") && keycloak.authenticated) {
     return (
       <SignedInPage
         screen={screen}
@@ -105,6 +239,17 @@ function App() {
         onNavigate={setScreen}
         onSignOut={signOut}
         onUpload={uploadResume}
+        onLoadLatest={loadLatestResume}
+        onAnalyze={analyzeResume}
+        onTailor={tailorResume}
+        onExport={exportResume}
+        applications={applications}
+        setApplications={setApplications}
+        onLoadApplications={listApplications}
+        onSaveApplication={saveApplication}
+        onDeleteApplication={removeApplication}
+        applicationError={applicationError}
+        setApplicationError={setApplicationError}
       />
     );
   }
@@ -208,7 +353,7 @@ function Welcome({ name, onSignOut, onNavigate }: {
       <header className="welcome-nav">
         <a className="brand" href="/"><span className="brand-mark">N</span><span>northstar<span className="brand-dot">.</span></span></a>
         <div className="welcome-nav-right">
-          <nav className="main-nav"><button className="nav-link" onClick={() => onNavigate("welcome")}>Home</button><button className="nav-link" onClick={() => onNavigate("resume")}>My resume</button><button className="nav-link" onClick={() => onNavigate("chat")}>Chat <span className="nav-soon">SOON</span></button></nav>
+          <nav className="main-nav"><button className="nav-link" onClick={() => onNavigate("welcome")}>Home</button><button className="nav-link" onClick={() => onNavigate("resume")}>My resume</button><button className="nav-link" onClick={() => onNavigate("applications")}>Applications</button><button className="nav-link" onClick={() => onNavigate("chat")}>Chat <span className="nav-soon">SOON</span></button></nav>
           <span className="user-avatar">{name.charAt(0).toUpperCase()}</span><button className="signout-button" onClick={onSignOut}>Sign out</button></div>
       </header>
       <section className="welcome-content">
@@ -218,7 +363,7 @@ function Welcome({ name, onSignOut, onNavigate }: {
         <div className="welcome-grid">
           <article className="welcome-card card-search"><div className="welcome-card-icon">⌕</div><p className="card-label">FIND YOUR FIT</p><h2>The right role<br />is out there.</h2><p>Explore opportunities that match where you want to go.</p><span className="card-link">Explore jobs <span>↗</span></span><div className="decor-search"><i /><i /><i /></div></article>
           <button className="welcome-card card-resume card-action" onClick={() => onNavigate("resume")}><div className="welcome-card-icon">✳</div><p className="card-label">SHOW YOUR STORY</p><h2>Your experience,<br />beautifully told.</h2><p>Upload your resume and keep your story in one place.</p><span className="card-link">Upload your resume <span>↗</span></span><div className="decor-paper"><b /><i /><i /><i /><i /></div></button>
-          <article className="welcome-card card-apply"><div className="welcome-card-icon">↗</div><p className="card-label">MAKE YOUR MOVE</p><h2>More time for<br />the good stuff.</h2><p>Keep your applications organized and your progress in view.</p><span className="card-link">Coming soon <span>↗</span></span><div className="decor-progress"><span /><span /><span /></div></article>
+          <button className="welcome-card card-apply card-action" onClick={() => onNavigate("applications")}><div className="welcome-card-icon">↗</div><p className="card-label">KEEP YOUR MOMENTUM</p><h2>Your search,<br />in good order.</h2><p>Track each opportunity and move it through your own application stages.</p><span className="card-link">Open application tracker <span>↗</span></span><div className="decor-progress"><span /><span /><span /></div></button>
         </div>
         <div className="welcome-note"><span>✦</span><p><b>Just getting started?</b> Take your time. Your next step will be here when you’re ready.</p></div>
       </section>
@@ -227,17 +372,139 @@ function Welcome({ name, onSignOut, onNavigate }: {
   );
 }
 
-function SignedInPage({ screen, name, onNavigate, onSignOut, onUpload }: {
-  screen: "resume" | "chat";
+function SignedInPage({ screen, name, onNavigate, onSignOut, onUpload, onLoadLatest, onAnalyze, onTailor, onExport,
+  applications, setApplications, onLoadApplications, onSaveApplication, onDeleteApplication, applicationError, setApplicationError }: {
+  screen: "resume" | "applications" | "chat";
   name: string;
   onNavigate: (screen: Screen) => void;
   onSignOut: () => void;
   onUpload: (file: File) => Promise<{ fileName: string; size: number }>;
+  onLoadLatest: () => Promise<{ fileName: string } | null>;
+  onAnalyze: (jobDescription: string) => Promise<ResumeAnalysis>;
+  onTailor: (jobDescription: string, confirmedSkills: string[]) => Promise<ResumeDraft>;
+  onExport: (resumeText: string, format: "pdf" | "docx") => Promise<Blob>;
+  applications: JobApplication[];
+  setApplications: React.Dispatch<React.SetStateAction<JobApplication[]>>;
+  onLoadApplications: () => Promise<JobApplication[]>;
+  onSaveApplication: (application: ApplicationForm, id?: string) => Promise<JobApplication>;
+  onDeleteApplication: (id: string) => Promise<void>;
+  applicationError: string;
+  setApplicationError: (message: string) => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [resumeName, setResumeName] = useState("");
+  const [jobDescription, setJobDescription] = useState("");
+  const [analysis, setAnalysis] = useState<ResumeAnalysis | null>(null);
+  const [confirmedSkills, setConfirmedSkills] = useState<string[]>([]);
+  const [draft, setDraft] = useState<ResumeDraft | null>(null);
+  const [applicationForm, setApplicationForm] = useState<ApplicationForm>(emptyApplicationForm);
+  const [applicationFormOpen, setApplicationFormOpen] = useState(false);
+  const [editingApplicationId, setEditingApplicationId] = useState<string | undefined>();
+  const [applicationBusy, setApplicationBusy] = useState(false);
+  const [applicationLoaded, setApplicationLoaded] = useState(false);
+
+  useEffect(() => {
+    if (screen !== "resume") return;
+    void onLoadLatest().then((resume) => {
+      if (resume) setResumeName(resume.fileName);
+    }).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : "Could not load your saved resume.");
+    });
+  }, [screen]);
+
+  useEffect(() => {
+    if (screen !== "applications" || applicationLoaded) return;
+    setApplicationError("");
+    void onLoadApplications().then((items) => {
+      setApplications(items);
+      setApplicationLoaded(true);
+    }).catch((reason: unknown) => {
+      setApplicationError(reason instanceof Error ? reason.message : "Could not load your applications.");
+    });
+  }, [screen, applicationLoaded]);
+
+  const openNewApplication = (prefillDescription = "") => {
+    setEditingApplicationId(undefined);
+    setApplicationForm({
+      ...emptyApplicationForm(),
+      jobDescription: prefillDescription,
+      status: prefillDescription ? "READY_TO_APPLY" : "SAVED",
+    });
+    setApplicationFormOpen(true);
+    setApplicationError("");
+  };
+
+  const editApplication = (application: JobApplication) => {
+    setEditingApplicationId(application.id);
+    setApplicationForm({
+      company: application.company,
+      jobTitle: application.jobTitle,
+      jobUrl: application.jobUrl ?? "",
+      status: application.status,
+      appliedDate: application.appliedDate ?? "",
+      notes: application.notes ?? "",
+      jobDescription: application.jobDescription ?? "",
+    });
+    setApplicationFormOpen(true);
+    setApplicationError("");
+  };
+
+  const submitApplication = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setApplicationBusy(true);
+    setApplicationError("");
+    try {
+      const saved = await onSaveApplication(applicationForm, editingApplicationId);
+      setApplications((current) => [saved, ...current.filter((item) => item.id !== saved.id)]);
+      setApplicationFormOpen(false);
+    } catch (reason) {
+      setApplicationError(reason instanceof Error ? reason.message : "Could not save this application.");
+    } finally {
+      setApplicationBusy(false);
+    }
+  };
+
+  const changeApplicationStatus = async (application: JobApplication, status: ApplicationStatus) => {
+    setApplicationError("");
+    try {
+      const updated = await onSaveApplication({
+        company: application.company,
+        jobTitle: application.jobTitle,
+        jobUrl: application.jobUrl ?? "",
+        status,
+        appliedDate: application.appliedDate ?? "",
+        notes: application.notes ?? "",
+        jobDescription: application.jobDescription ?? "",
+      }, application.id);
+      setApplications((current) => current.map((item) => item.id === updated.id ? updated : item));
+    } catch (reason) {
+      setApplicationError(reason instanceof Error ? reason.message : "Could not update the application status.");
+    }
+  };
+
+  const deleteApplication = async (application: JobApplication) => {
+    if (!window.confirm(`Delete the ${application.jobTitle} application at ${application.company}?`)) return;
+    setApplicationError("");
+    try {
+      await onDeleteApplication(application.id);
+      setApplications((current) => current.filter((item) => item.id !== application.id));
+    } catch (reason) {
+      setApplicationError(reason instanceof Error ? reason.message : "Could not delete the application.");
+    }
+  };
+
+  const retryApplicationLoad = async () => {
+    setApplicationError("");
+    try {
+      setApplications(await onLoadApplications());
+      setApplicationLoaded(true);
+    } catch (reason) {
+      setApplicationError(reason instanceof Error ? reason.message : "Could not load your applications.");
+    }
+  };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -248,6 +515,9 @@ function SignedInPage({ screen, name, onNavigate, onSignOut, onUpload }: {
     try {
       const result = await onUpload(file);
       setMessage(`${result.fileName} uploaded successfully (${(result.size / 1024 / 1024).toFixed(2)} MB).`);
+      setResumeName(result.fileName);
+      setAnalysis(null);
+      setDraft(null);
       setFile(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Upload failed. Please try again.");
@@ -256,12 +526,56 @@ function SignedInPage({ screen, name, onNavigate, onSignOut, onUpload }: {
     }
   };
 
+  const analyze = async () => {
+    setBusy(true);
+    setError("");
+    setDraft(null);
+    try {
+      setAnalysis(await onAnalyze(jobDescription));
+      setConfirmedSkills([]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Analysis failed. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createDraft = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      setDraft(await onTailor(jobDescription, confirmedSkills));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Draft generation failed. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const downloadDraft = async (format: "pdf" | "docx" | "txt") => {
+    if (!draft) return;
+    setError("");
+    try {
+      const blob = format === "txt"
+        ? new Blob([draft.resumeText], { type: "text/plain;charset=utf-8" })
+        : await onExport(draft.resumeText, format);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `tailored-resume.${format}`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Download failed. Please try again.");
+    }
+  };
+
   return (
     <main className="welcome-shell">
       <header className="welcome-nav">
         <a className="brand" href="/" onClick={(event) => { event.preventDefault(); onNavigate("welcome"); }}><span className="brand-mark">N</span><span>northstar<span className="brand-dot">.</span></span></a>
         <div className="welcome-nav-right">
-          <nav className="main-nav"><button className="nav-link" onClick={() => onNavigate("welcome")}>Home</button><button className={`nav-link ${screen === "resume" ? "active" : ""}`} onClick={() => onNavigate("resume")}>My resume</button><button className={`nav-link ${screen === "chat" ? "active" : ""}`} onClick={() => onNavigate("chat")}>Chat <span className="nav-soon">SOON</span></button></nav>
+          <nav className="main-nav"><button className="nav-link" onClick={() => onNavigate("welcome")}>Home</button><button className={`nav-link ${screen === "resume" ? "active" : ""}`} onClick={() => onNavigate("resume")}>My resume</button><button className={`nav-link ${screen === "applications" ? "active" : ""}`} onClick={() => onNavigate("applications")}>Applications</button><button className={`nav-link ${screen === "chat" ? "active" : ""}`} onClick={() => onNavigate("chat")}>Chat <span className="nav-soon">SOON</span></button></nav>
           <span className="user-avatar">{name.charAt(0).toUpperCase()}</span><button className="signout-button" onClick={onSignOut}>Sign out</button>
         </div>
       </header>
@@ -282,6 +596,148 @@ function SignedInPage({ screen, name, onNavigate, onSignOut, onUpload }: {
             <button className="primary-button upload-submit" disabled={!file || busy} type="submit">{busy ? "Uploading securely..." : "Upload resume"} <ArrowIcon /></button>
             <p className="fine-print">Your file is stored privately and associated with your account.</p>
           </form>
+          <section className="tailor-card">
+            <p className="card-label">TAILOR YOUR RESUME</p>
+            <h2>Start with the job description.</h2>
+            <p className="tailor-help">
+              {resumeName ? `Using your latest resume: ${resumeName}` : "Upload a PDF or DOCX resume first."}
+              {" "}Your original file will never be overwritten.
+            </p>
+            <label className="job-description-label">
+              Job description
+              <textarea
+                value={jobDescription}
+                onChange={(event) => { setJobDescription(event.target.value); setAnalysis(null); setDraft(null); }}
+                placeholder="Paste the job description here..."
+                rows={8}
+                maxLength={30000}
+              />
+            </label>
+            {error && <p className="upload-feedback error" role="alert">{error}</p>}
+            <button className="primary-button upload-submit" type="button" disabled={!jobDescription.trim() || busy} onClick={() => void analyze()}>
+              {busy ? "Analyzing..." : "Analyze skill match"} <ArrowIcon />
+            </button>
+            {analysis && (
+              <div className="analysis-results">
+                <div className="analysis-heading">
+                  <div><p className="card-label">ROLE MATCH</p><strong>{analysis.matchScore}%</strong></div>
+                  <p>{analysis.summary}</p>
+                </div>
+                <div className="skill-columns">
+                  <div>
+                    <h3>Skills found in your resume</h3>
+                    {analysis.matchedSkills.length
+                      ? <div className="skill-tags">{analysis.matchedSkills.map((skill) => <span key={skill}>{skill}</span>)}</div>
+                      : <p className="tailor-help">No matching skills were identified.</p>}
+                  </div>
+                  <div>
+                    <h3>Potential gaps</h3>
+                    {analysis.skillGaps.length ? analysis.skillGaps.map(({ skill, importance }) => (
+                      <label className="gap-option" key={skill}>
+                        <input
+                          type="checkbox"
+                          checked={confirmedSkills.includes(skill)}
+                          onChange={(event) => setConfirmedSkills((current) =>
+                            event.target.checked ? [...current, skill] : current.filter((value) => value !== skill))}
+                        />
+                        <span><b>{skill}</b><small>{importance} priority · select only if you genuinely have this skill</small></span>
+                      </label>
+                    )) : <p className="tailor-help">No significant gaps identified.</p>}
+                  </div>
+                </div>
+                {analysis.recommendations.length > 0 && (
+                  <div className="recommendations">
+                    <h3>Suggestions</h3>
+                    {analysis.recommendations.map((recommendation) => <p key={recommendation}>• {recommendation}</p>)}
+                  </div>
+                )}
+                <p className="fine-print">Only select skills you genuinely have. The AI must not invent experience, qualifications, or achievements.</p>
+                <button className="primary-button upload-submit" type="button" disabled={busy} onClick={() => void createDraft()}>
+                  {busy ? "Preparing your draft..." : "Create tailored draft"} <ArrowIcon />
+                </button>
+              </div>
+            )}
+            {draft && (
+              <div className="draft-result">
+                <div className="draft-title">
+                  <div><p className="card-label">YOUR EDITABLE DRAFT</p><p>{draft.changeSummary}</p></div>
+                  <div className="draft-downloads">
+                    <button type="button" className="signout-button" onClick={() => void downloadDraft("pdf")}>Download PDF</button>
+                    <button type="button" className="signout-button" onClick={() => void downloadDraft("docx")}>Download Word</button>
+                    <button type="button" className="signout-button" onClick={() => void downloadDraft("txt")}>Download TXT</button>
+                  </div>
+                </div>
+                {draft.addedSkills.length > 0 && <p className="tailor-help">Included with your confirmation: {draft.addedSkills.join(", ")}</p>}
+                <label className="job-description-label">Review and edit before using
+                  <textarea className="draft-text" value={draft.resumeText} onChange={(event) => setDraft({ ...draft, resumeText: event.target.value })} rows={18} />
+                </label>
+                <p className="fine-print">This is a text draft for review; your uploaded resume remains unchanged.</p>
+                <button className="primary-button upload-submit" type="button" onClick={() => { openNewApplication(jobDescription); onNavigate("applications"); }}>
+                  Track this job application <ArrowIcon />
+                </button>
+              </div>
+            )}
+          </section>
+          <button className="back-link" onClick={() => onNavigate("welcome")}>← Back to your home</button>
+        </section>
+      ) : screen === "applications" ? (
+        <section className="feature-page applications-page">
+          <p className="eyebrow"><span className="status-dot" />YOUR SEARCH, YOUR PACE</p>
+          <div className="applications-title-row">
+            <div>
+              <h1>Application tracker</h1>
+              <p className="welcome-subtitle">Keep every opportunity moving. Update a status whenever you’re ready.</p>
+            </div>
+            <button type="button" className="primary-button add-application-button" onClick={() => openNewApplication()}>Add an application <span>＋</span></button>
+          </div>
+          {applicationError && <p className="upload-feedback error" role="alert">{applicationError}</p>}
+          {applicationError && !applicationLoaded && <button className="signout-button" type="button" onClick={() => void retryApplicationLoad()}>Retry loading applications</button>}
+          {!applicationLoaded && !applicationError && <p className="application-loading">Loading your applications...</p>}
+          {applicationFormOpen && (
+            <form className="application-form" onSubmit={(event) => void submitApplication(event)}>
+              <div className="application-form-heading">
+                <div><p className="card-label">{editingApplicationId ? "UPDATE YOUR TRACKER" : "NEW OPPORTUNITY"}</p><h2>{editingApplicationId ? "Edit application" : "Add an application"}</h2></div>
+                <button type="button" className="signout-button" onClick={() => setApplicationFormOpen(false)}>Cancel</button>
+              </div>
+              <div className="application-fields">
+                <label>Job title<input required maxLength={200} value={applicationForm.jobTitle} onChange={(event) => setApplicationForm({ ...applicationForm, jobTitle: event.target.value })} placeholder="Software Engineer" /></label>
+                <label>Company<input required maxLength={200} value={applicationForm.company} onChange={(event) => setApplicationForm({ ...applicationForm, company: event.target.value })} placeholder="Company name" /></label>
+                <label>Status<select value={applicationForm.status} onChange={(event) => setApplicationForm({ ...applicationForm, status: event.target.value as ApplicationStatus })}>{APPLICATION_STATUSES.map((status) => <option key={status.value} value={status.value}>{status.label}</option>)}</select></label>
+                <label>Applied date<input type="date" value={applicationForm.appliedDate} onChange={(event) => setApplicationForm({ ...applicationForm, appliedDate: event.target.value })} /></label>
+                <label className="application-wide">Job posting URL<input type="url" maxLength={2000} value={applicationForm.jobUrl} onChange={(event) => setApplicationForm({ ...applicationForm, jobUrl: event.target.value })} placeholder="https://..." /></label>
+                <label className="application-wide">Notes<textarea rows={3} maxLength={5000} value={applicationForm.notes} onChange={(event) => setApplicationForm({ ...applicationForm, notes: event.target.value })} placeholder="Follow-up reminders, recruiter details, or interview notes" /></label>
+                <label className="application-wide">Job description<textarea rows={5} maxLength={30000} value={applicationForm.jobDescription} onChange={(event) => setApplicationForm({ ...applicationForm, jobDescription: event.target.value })} placeholder="Optional — add the job description for your records" /></label>
+              </div>
+              <button type="submit" className="primary-button application-save" disabled={applicationBusy}>{applicationBusy ? "Saving..." : editingApplicationId ? "Save changes" : "Add to tracker"} <ArrowIcon /></button>
+            </form>
+          )}
+          {applicationLoaded && applications.length === 0 && !applicationFormOpen ? (
+            <div className="applications-empty"><span className="welcome-card-icon">↗</span><h2>Your next move starts here.</h2><p>Add an opportunity to keep your applications and next steps in one place.</p><button className="back-link" onClick={() => openNewApplication()}>Add your first application ↗</button></div>
+          ) : applicationLoaded && applications.length > 0 ? (
+            <div className="application-board">
+              {APPLICATION_STATUSES.map((status) => {
+                const items = applications.filter((application) => application.status === status.value);
+                return (
+                  <section className="application-column" key={status.value}>
+                    <div className="application-column-heading"><h2>{status.label}</h2><span>{items.length}</span></div>
+                    {items.length === 0 ? <p className="application-column-empty">No applications</p> : items.map((application) => (
+                      <article className="application-card" key={application.id}>
+                        <div className="application-card-title"><h3>{application.jobTitle}</h3><button type="button" aria-label={`Edit ${application.jobTitle}`} onClick={() => editApplication(application)}>···</button></div>
+                        <p className="application-company">{application.company}</p>
+                        {application.appliedDate && <p className="application-date">Applied {new Date(`${application.appliedDate}T00:00:00`).toLocaleDateString()}</p>}
+                        {application.jobUrl && <a className="application-link" href={application.jobUrl} target="_blank" rel="noreferrer">View job posting ↗</a>}
+                        {application.notes && <p className="application-notes">{application.notes}</p>}
+                        <label className="application-status-label">Move to
+                          <select value={application.status} onChange={(event) => void changeApplicationStatus(application, event.target.value as ApplicationStatus)}>{APPLICATION_STATUSES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+                        </label>
+                        <button className="application-delete" type="button" onClick={() => void deleteApplication(application)}>Delete</button>
+                      </article>
+                    ))}
+                  </section>
+                );
+              })}
+            </div>
+          ) : null}
           <button className="back-link" onClick={() => onNavigate("welcome")}>← Back to your home</button>
         </section>
       ) : (

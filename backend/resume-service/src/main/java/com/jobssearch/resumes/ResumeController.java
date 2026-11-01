@@ -1,4 +1,4 @@
-package com.jobssearch.users;
+package com.jobssearch.resumes;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;

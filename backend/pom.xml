@@ -18,6 +18,9 @@
     <modules>
         <module>api-gateway</module>
         <module>user-service</module>
+        <module>resume-service</module>
+        <module>application-service</module>
+        <module>notification-service</module>
     </modules>
 
     <properties>

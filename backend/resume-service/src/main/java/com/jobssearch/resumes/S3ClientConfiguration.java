@@ -1,4 +1,4 @@
-package com.jobssearch.users;
+package com.jobssearch.resumes;
 
 import java.net.URI;
 

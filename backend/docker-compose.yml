@@ -1,4 +1,19 @@
 services:
+  application-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${APPLICATION_DB_NAME:-applications}
+      POSTGRES_USER: ${APPLICATION_DB_USER:-applications}
+      POSTGRES_PASSWORD: ${APPLICATION_DB_PASSWORD:-local-applications-password}
+    ports:
+      - "5432:5432"
+    volumes:
+      - application-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
   minio:
     image: quay.io/minio/minio:RELEASE.2025-02-07T23-21-09Z
     command: server /data --console-address ":9001"
@@ -47,6 +62,29 @@ services:
       JOBS_WEB_ORIGIN: ${JOBS_WEB_ORIGIN:-http://localhost:3000}
     volumes:
       - ./keycloak/configure-realm.sh:/setup/configure-realm.sh:ro
-
+  ollama:
+    image: ollama/ollama:0.6.8
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+  notification-service:
+    build:
+      context: .
+      dockerfile: notification-service/Dockerfile
+    depends_on:
+      keycloak-setup:
+        condition: service_completed_successfully
+    environment:
+      KEYCLOAK_ISSUER_URI: ${KEYCLOAK_ISSUER_URI:-http://localhost:8180/realms/jobs-search}
+      KEYCLOAK_JWK_SET_URI: http://keycloak:8080/realms/jobs-search/protocol/openid-connect/certs
+      MAILGUN_BASE_URL: ${MAILGUN_BASE_URL:-https://api.mailgun.net}
+      MAILGUN_DOMAIN: ${MAILGUN_DOMAIN:-}
+      MAILGUN_API_KEY: ${MAILGUN_API_KEY:-}
+      MAILGUN_FROM_ADDRESS: ${MAILGUN_FROM_ADDRESS:-}
+    ports:
+      - "8084:8084"
 volumes:
   minio-data:
+  ollama-data:
+  application-db-data:
